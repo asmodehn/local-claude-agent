@@ -21,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE="@agentclientprotocol/claude-agent-acp"
 # The version the patches in patches/claude-agent-acp/ were made and tested against.
-PINNED_VERSION="0.86.0"
+PINNED_VERSION="0.90.0"
 AGENT_VERSION="${CLAUDE_AGENT_ACP_VERSION:-${PINNED_VERSION}}"
 PATCH_ROOT="${SCRIPT_DIR}/patches/claude-agent-acp"
 BIN_NAME="claude-agent-acp"

@@ -24,7 +24,7 @@ $ErrorActionPreference = "Stop"
 
 $Package           = "@agentclientprotocol/claude-agent-acp"
 # The version the patches in patches\claude-agent-acp\ were made and tested against.
-$PinnedVersion     = "0.86.0"
+$PinnedVersion     = "0.90.0"
 $AgentVersion      = if ($env:CLAUDE_AGENT_ACP_VERSION) { $env:CLAUDE_AGENT_ACP_VERSION } else { $PinnedVersion }
 $PatchRoot         = Join-Path $PSScriptRoot "patches\claude-agent-acp"
 $AgentDisplayName  = "Claude Agent (ACP)"

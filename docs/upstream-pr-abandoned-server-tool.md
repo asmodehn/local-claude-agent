@@ -1,7 +1,7 @@
 # Record: abandoned server tool calls fail the turn (not submitted upstream)
 
 Written as a PR for agentclientprotocol/claude-agent-acp against `main` (df21b3f), tested
-there red then green; not submitted. The fix is to be carried as a local patch instead.
+there red then green; not submitted. Carried as `patches/claude-agent-acp/0.90.0/0002-close-unanswered-server-tool-calls.patch`.
 
 ---
 

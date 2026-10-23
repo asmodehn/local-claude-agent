@@ -47,7 +47,33 @@ After patching, the installers check that `dist/acp-agent.js` still parses and r
 | --- | --- | --- |
 | `0.90.0/0001-settle-advisor-tool-results.patch` (check: `advisor-settles.check.mjs`) | turns that call the advisor tool fail with "Claude ended the turn without returning results for tool calls: srvtoolu_…", and JetBrains then kills the agent | [PR #1247](https://github.com/agentclientprotocol/claude-agent-acp/pull/1247), draft comment in `docs/upstream-pr-1247-comment.md` |
 | `0.90.0/0002-close-unanswered-server-tool-calls.patch` (check: `server-tools-close.check.mjs`) | the same error for an advisor call whose result never arrives (a message sent while it runs, or a client tool call earlier in the same response) | not submitted, analysis in `docs/upstream-pr-abandoned-server-tool.md` |
+| `0.90.0/0003-rotate-credentials-on-quota.patch` (check: `credential-rotation.check.mjs`) | not a bug fix, a local feature: when the subscription or an API key runs out of quota, sessions move to the next key of a list (see [API key fallback](#api-key-fallback)) | local only |
 | `0.86.0/0001-settle-advisor-tool-results.patch` (check: `advisor-settles.check.mjs`) | previous pin: the advisor fix for 0.86.0, without 0002 | as above |
+
+## API key fallback
+
+With patch 0003, a turn that fails because the current credential is out of quota (a
+claude.ai usage limit, or "Credit balance is too low" on an API key) switches every session
+of the agent to the next key of `~/.config/claude-agent-acp/api-keys`, and the chat asks you
+to send the message again. One key per line, `#` starts a comment; keep it `chmod 600` (on
+Windows, where mode bits differ, `keys_file_readable_by_others` is logged regardless). The
+file is read at each switch, so keys can be added without restarting.
+
+- Order: the native credential (CLI login, or an `ANTHROPIC_API_KEY` the IDE passes to the
+  agent), then the keys top to bottom. A drained credential is skipped until the agent
+  restarts; the subscription is not returned to when its limit resets.
+- Only sessions of a patched agent switch; an agent started before the install keeps the old
+  code until the IDE restarts it. Sessions routed by the IDE (`providers/set`, gateway login)
+  are left alone.
+- Every step is a JSON line in `~/.local/state/claude-agent-acp/credential-rotation.log`, keys
+  shown by their last four characters: `switched`, `session_created`, `no_credential_left`,
+  `keys_file_missing`, `keys_file_unreadable`, `keys_file_readable_by_others`,
+  `recreate_failed`, `quota_exhausted_already_rotated`, and two that mean the patch is broken:
+  `credential_not_in_effect` (a session on a key reports another key source, so it bills
+  something else) and `rotation_failed` (a defect in the switch; the quota failure is shown
+  as unpatched). A real limit cannot be forced, so this log is how the first live switch is
+  confirmed.
+- `CLAUDE_ACP_API_KEYS_FILE` and `CLAUDE_ACP_ROTATION_LOG` override both paths.
 
 ## After installing
 

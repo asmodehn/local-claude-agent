@@ -1,0 +1,97 @@
+Refuse a model of a local deny list on a session that runs on a key of the list.
+
+On top of 0003: before a prompt is queued, a session whose credential is a key of
+~/.config/claude-agent-acp/api-keys checks its current model (and the model its
+alias resolves to, so "default" is caught) against
+~/.config/claude-agent-acp/denied-models (CLAUDE_ACP_DENIED_MODELS_FILE overrides
+the path; one entry per line in the CLI's deniedModels syntax, so "fable" blocks
+the family; # starts a comment). A denied model ends the turn normally with a
+chat line asking to pick another model, before any request is sent, and logs
+model_denied in the rotation log. The file is read at each prompt; a missing file
+denies nothing. The native credential and client-routed sessions are not checked.
+The CLI's own deniedModels is read from managed settings only, which would block
+the model on the subscription too.
+
+Not covered: the server-side advisor's model, a subagent's own model, and a
+switch made inside a running turn (a refusal fallback); the next prompt catches
+the last one.
+
+Local only, not meant for upstream.
+
+--- a/dist/credential-rotation.js
++++ b/dist/credential-rotation.js
+@@ -6,10 +6,13 @@
+ import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
++import { isDeniedModel } from "./session-model.js";
+ 
+ const home = os.homedir();
+ export const KEYS_FILE = process.env.CLAUDE_ACP_API_KEYS_FILE ??
+     path.join(home, ".config", "claude-agent-acp", "api-keys");
++export const DENIED_MODELS_FILE = process.env.CLAUDE_ACP_DENIED_MODELS_FILE ??
++    path.join(home, ".config", "claude-agent-acp", "denied-models");
+ export const LOG_FILE = process.env.CLAUDE_ACP_ROTATION_LOG ??
+     path.join(home, ".local", "state", "claude-agent-acp", "credential-rotation.log");
+ 
+@@ -46,6 +49,27 @@
+     return text.split("\n").map((line) => line.replace(/#.*/, "").trim()).filter(Boolean);
+ }
+ 
++/** The model a session on a key of the list must not run, or `undefined`. Entries of the
++ *  denied-models file follow `deniedModels` (`fable` blocks the family); it is read on
++ *  every call, so an edit applies to the next prompt. A missing file denies nothing. */
++export function deniedModelOnKey(session) {
++    if (typeof session.credential !== "string")
++        return undefined;
++    let text;
++    try {
++        text = readFileSync(DENIED_MODELS_FILE, "utf8");
++    }
++    catch (error) {
++        if (error?.code !== "ENOENT")
++            logRotation("denied_models_file_unreadable", { file: DENIED_MODELS_FILE, error: String(error) });
++        return undefined;
++    }
++    const denied = text.split("\n").map((line) => line.replace(/#.*/, "").trim()).filter(Boolean);
++    const modelId = session.models.currentModelId;
++    const resolved = session.modelInfos?.find((info) => info.value === modelId)?.resolvedModel;
++    return [modelId, resolved].find((id) => id && isDeniedModel(id, denied));
++}
++
+ class CredentialRotation {
+     current = null;
+     drained = new Set();
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -16,7 +16,7 @@
+ import packageJson from "../package.json" with { type: "json" };
+ import { applyAskElicitationResponse, askUserQuestionsToCreateRequest, createElicitationResponseToElicitResult, extractAskUserQuestions, extractRefusalFallbackPrompt, mcpElicitationToCreateRequest, REFUSAL_FALLBACK_DIALOG_KIND, refusalFallbackResultFromResponse, refusalFallbackToCreateRequest, } from "./elicitation.js";
+ import { forkSession } from "./fork-session.js";
+-import { credentialRotation, logRotation, maskKey } from "./credential-rotation.js";
++import { credentialRotation, deniedModelOnKey, DENIED_MODELS_FILE, logRotation, maskKey } from "./credential-rotation.js";
+ import { readSubagentMessages, subagentHistory } from "./subagent-history.js";
+ import { RfdSubagentReplay, replaySubagentTerminalState, } from "./subagent-replay.js";
+ import { readResumedSession, readResumedTail, } from "./resumed-session.js";
+@@ -2073,6 +2073,21 @@
+         const subscriptionGuard = this.runClaudeSubscriptionGuard(params.sessionId, session);
+         if (subscriptionGuard)
+             await subscriptionGuard;
++        // Local patch: a key of the list never runs a model of the denied list. The turn
++        // ends normally, since JetBrains stops the agent on a failed turn.
++        const deniedModel = deniedModelOnKey(session);
++        if (deniedModel) {
++            logRotation("model_denied", { sessionId: params.sessionId, credential: maskKey(session.credential), model: deniedModel });
++            await this.client.sessionUpdate({
++                sessionId: params.sessionId,
++                update: {
++                    sessionUpdate: "agent_message_chunk",
++                    content: { type: "text", text: `${deniedModel} is not allowed on ${maskKey(session.credential)} (see ${DENIED_MODELS_FILE}). Pick another model in the model picker, then send your message again.\n` },
++                },
++            });
++            events.ended({ stopReason: "end_turn" });
++            return;
++        }
+         if (session.autoModeFallbackWarningPending) {
+             await this.sessionModes.publishFallbackWarning(params.sessionId, session);
+         }

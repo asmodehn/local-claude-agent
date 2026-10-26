@@ -48,6 +48,7 @@ After patching, the installers check that `dist/acp-agent.js` still parses and r
 | `0.90.0/0001-settle-advisor-tool-results.patch` (check: `advisor-settles.check.mjs`) | turns that call the advisor tool fail with "Claude ended the turn without returning results for tool calls: srvtoolu_…", and JetBrains then kills the agent | [PR #1247](https://github.com/agentclientprotocol/claude-agent-acp/pull/1247), draft comment in `docs/upstream-pr-1247-comment.md` |
 | `0.90.0/0002-close-unanswered-server-tool-calls.patch` (check: `server-tools-close.check.mjs`) | the same error for an advisor call whose result never arrives (a message sent while it runs, or a client tool call earlier in the same response) | not submitted, analysis in `docs/upstream-pr-abandoned-server-tool.md` |
 | `0.90.0/0003-rotate-credentials-on-quota.patch` (check: `credential-rotation.check.mjs`) | not a bug fix, a local feature: when the subscription or an API key runs out of quota, sessions move to the next key of a list (see [API key fallback](#api-key-fallback)) | local only |
+| `0.90.0/0004-deny-models-on-keys.patch` (check: `model-deny.check.mjs`) | not a bug fix, a local feature on top of 0003: a session on a key of the list refuses the models of a deny list (see [API key fallback](#api-key-fallback)) | local only |
 | `0.86.0/0001-settle-advisor-tool-results.patch` (check: `advisor-settles.check.mjs`) | previous pin: the advisor fix for 0.86.0, without 0002 | as above |
 
 ## API key fallback
@@ -73,7 +74,14 @@ file is read at each switch, so keys can be added without restarting.
   something else) and `rotation_failed` (a defect in the switch; the quota failure is shown
   as unpatched). A real limit cannot be forced, so this log is how the first live switch is
   confirmed.
-- `CLAUDE_ACP_API_KEYS_FILE` and `CLAUDE_ACP_ROTATION_LOG` override both paths.
+- With patch 0004, a session on a key refuses the models listed in
+  `~/.config/claude-agent-acp/denied-models` (one per line, `#` comments, the CLI's
+  `deniedModels` syntax: `fable` blocks the family). The turn ends with a chat line asking to
+  pick another model, before any request is sent, and `model_denied` is logged. The file is
+  read at each prompt; without it nothing is refused. Not covered: the advisor tool's own
+  model, a subagent's own model, and a model switch inside a running turn.
+- `CLAUDE_ACP_API_KEYS_FILE`, `CLAUDE_ACP_ROTATION_LOG` and `CLAUDE_ACP_DENIED_MODELS_FILE`
+  override the paths.
 
 ## After installing
 

@@ -29,6 +29,16 @@ Two equivalent installers are provided:
 powershell -ExecutionPolicy Bypass -File .\install-claude-acp-jetbrains.ps1
 ```
 
+## Agent log
+
+The installers set `CLAUDE_AGENT_LOGS` in the agent's `acp.json` entry, so the agent writes
+its own log to `~/.local/state/claude-agent-acp/agent.log` (Windows:
+`%USERPROFILE%\.local\state\claude-agent-acp\agent.log`), next to the API key fallback's log.
+It holds the agent's errors, which still also reach the IDE log, and its other lines, which then
+no longer do. It can contain conversation text; on macOS/Linux the folder is created mode 700. A
+running agent keeps the environment it started with: the log starts with the next new chat or
+IDE restart. The agent appends to it without rotation.
+
 ## Local patches
 
 Fixes for upstream bugs that are not released yet live in `patches/claude-agent-acp/<version>/`, one unified diff per fix, made against that exact published version. The installers install the pinned version (`PINNED_VERSION` in the `.sh`, `$PinnedVersion` in the `.ps1`) and apply its patches; re-running them is safe, as an already-applied patch is skipped.

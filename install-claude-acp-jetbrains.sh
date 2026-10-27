@@ -239,6 +239,12 @@ fi
 info "Registering agent in ${CONFIG_FILE}..."
 mkdir -p "${CONFIG_DIR}"
 
+# The agent writes its own log there (CLAUDE_AGENT_LOGS -> agent.log): its errors, and
+# the lines it then no longer sends to the IDE log. It can hold conversation text.
+AGENT_LOG_DIR="${HOME}/.local/state/claude-agent-acp"
+mkdir -p "${AGENT_LOG_DIR}"
+chmod 700 "${AGENT_LOG_DIR}"
+
 if [[ -f "${CONFIG_FILE}" ]]; then
   cp "${CONFIG_FILE}" "${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
 fi
@@ -246,7 +252,7 @@ fi
 MERGE_SCRIPT="$(mktemp)"
 cat > "${MERGE_SCRIPT}" <<'NODE'
 const fs = require("fs");
-const [, , configFile, agentName, agentPath, envBlockJson] = process.argv;
+const [, , configFile, agentName, agentPath, envBlockJson, agentLogDir] = process.argv;
 
 let config = { default_mcp_settings: { use_custom_mcp: true, use_idea_mcp: false }, agent_servers: {} };
 if (fs.existsSync(configFile)) {
@@ -258,20 +264,20 @@ if (fs.existsSync(configFile)) {
 }
 
 config.agent_servers = config.agent_servers || {};
-const env = JSON.parse(envBlockJson);
+const env = { ...JSON.parse(envBlockJson), CLAUDE_AGENT_LOGS: agentLogDir };
 
 config.agent_servers[agentName] = {
   command: agentPath,
   args: [],
   use_idea_mcp: true,
   use_custom_mcp: true,
-  ...(Object.keys(env).length ? { env } : {}),
+  env,
 };
 
 fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + "\n");
 NODE
 
-node "${MERGE_SCRIPT}" "${CONFIG_FILE}" "${AGENT_DISPLAY_NAME}" "${AGENT_PATH}" "${CLAUDE_ENV_BLOCK}"
+node "${MERGE_SCRIPT}" "${CONFIG_FILE}" "${AGENT_DISPLAY_NAME}" "${AGENT_PATH}" "${CLAUDE_ENV_BLOCK}" "${AGENT_LOG_DIR}"
 rm -f "${MERGE_SCRIPT}"
 
 ok "Registered '${AGENT_DISPLAY_NAME}' in ${CONFIG_FILE}"

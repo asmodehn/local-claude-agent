@@ -276,6 +276,12 @@ function ConvertTo-HashtableDeep($InputObject) {
 Info "Registering agent in $ConfigFile..."
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 
+# The agent writes its own log there (CLAUDE_AGENT_LOGS -> agent.log): its errors, and
+# the lines it then no longer sends to the IDE log. It can hold conversation text; the
+# folder sits under the user's profile, private to that user by default.
+$AgentLogDir = Join-Path $env:USERPROFILE ".local\state\claude-agent-acp"
+New-Item -ItemType Directory -Force -Path $AgentLogDir | Out-Null
+
 $config = $null
 if (Test-Path $ConfigFile) {
   $backupPath = "$ConfigFile.bak.$(Get-Date -Format yyyyMMddHHmmss)"
@@ -302,7 +308,8 @@ $agentEntry = @{
   use_idea_mcp  = $true
   use_custom_mcp = $true
 }
-if ($envBlock.Count -gt 0) { $agentEntry["env"] = $envBlock }
+$envBlock["CLAUDE_AGENT_LOGS"] = $AgentLogDir
+$agentEntry["env"] = $envBlock
 
 $config["agent_servers"][$AgentDisplayName] = $agentEntry
 

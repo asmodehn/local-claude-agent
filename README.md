@@ -37,7 +37,7 @@ To install another version, set `CLAUDE_AGENT_ACP_VERSION` (e.g. `CLAUDE_AGENT_A
 
 The macOS/Linux installer applies patches with `patch` (no fuzz, offsets allowed); the Windows one uses `git apply` and so needs git. The Windows path is untested.
 
-After patching, the installers check that `dist/acp-agent.js` still parses and run each `*.check.mjs` in the version's folder against the installed package; a check proves its patch's fix actually behaves, since a hunk can apply in the wrong place and still report success. A failing check stops the installer.
+After patching, the installers check that `dist/acp-agent.js` still parses and run each `*.check.mjs` in the version's folder against the installed package; a check proves its patch's fix actually behaves, since a hunk can apply in the wrong place and still report success. A failing check stops the installer. They also check that every patch is still detected as applied once all are in: a re-run relies on that, so patches that change each other's lines must be merged into one, and the installer stops if they are not.
 
 `CLAUDE_AGENT_ACP_VERSION` is handed to npm as the version spec, so it can also name a tag, a directory or a git URL: only point it at code you trust, as the install may run under `sudo`.
 
@@ -47,8 +47,7 @@ After patching, the installers check that `dist/acp-agent.js` still parses and r
 | --- | --- | --- |
 | `0.90.0/0001-settle-advisor-tool-results.patch` (check: `advisor-settles.check.mjs`) | turns that call the advisor tool fail with "Claude ended the turn without returning results for tool calls: srvtoolu_…", and JetBrains then kills the agent | [PR #1247](https://github.com/agentclientprotocol/claude-agent-acp/pull/1247), draft comment in `docs/upstream-pr-1247-comment.md` |
 | `0.90.0/0002-close-unanswered-server-tool-calls.patch` (check: `server-tools-close.check.mjs`) | the same error for an advisor call whose result never arrives (a message sent while it runs, or a client tool call earlier in the same response) | not submitted, analysis in `docs/upstream-pr-abandoned-server-tool.md` |
-| `0.90.0/0003-rotate-credentials-on-quota.patch` (check: `credential-rotation.check.mjs`) | not a bug fix, a local feature: when the subscription or an API key runs out of quota, sessions move to the next key of a list (see [API key fallback](#api-key-fallback)) | local only |
-| `0.90.0/0004-deny-models-on-keys.patch` (check: `model-deny.check.mjs`) | not a bug fix, a local feature on top of 0003: a session on a key of the list refuses the models of a deny list (see [API key fallback](#api-key-fallback)) | local only |
+| `0.90.0/0003-api-key-fallback.patch` (checks: `credential-rotation.check.mjs`, `model-deny.check.mjs`, `credential-return.check.mjs`) | not a bug fix, a local feature: when the subscription or an API key runs out of quota, sessions move to the next key of a list, refuse a deny list of models there, and return to the subscription once its limit has reset (see [API key fallback](#api-key-fallback)) | local only |
 | `0.86.0/0001-settle-advisor-tool-results.patch` (check: `advisor-settles.check.mjs`) | previous pin: the advisor fix for 0.86.0, without 0002 | as above |
 
 ## API key fallback
@@ -61,20 +60,28 @@ Windows, where mode bits differ, `keys_file_readable_by_others` is logged regard
 file is read at each switch, so keys can be added without restarting.
 
 - Order: the native credential (CLI login, or an `ANTHROPIC_API_KEY` the IDE passes to the
-  agent), then the keys top to bottom. A drained credential is skipped until the agent
-  restarts; the subscription is not returned to when its limit resets.
+  agent), then the keys top to bottom. A drained key is skipped until the agent restarts.
+  Closing a chat does not restart its agent in PyCharm; quitting the IDE does.
+- The reset time of the limit that drained the native credential is kept
+  with the switch (`returnsAt` in the `switched` line); the first message at or after it moves
+  every session back to the native credential before it runs (`returned`). No polling: the
+  time is checked when a message arrives, so an idle chat returns at its next message. A
+  switch whose limit reported no reset time (`returnsAt: null`) is never returned from. A
+  return that is too early costs one round trip: the message hits the limit and switches again.
 - Only sessions of a patched agent switch; an agent started before the install keeps the old
   code until the IDE restarts it. Sessions routed by the IDE (`providers/set`, gateway login)
   are left alone.
 - Every step is a JSON line in `~/.local/state/claude-agent-acp/credential-rotation.log`, keys
   shown by their last four characters: `switched`, `session_created`, `no_credential_left`,
   `keys_file_missing`, `keys_file_unreadable`, `keys_file_readable_by_others`,
-  `recreate_failed`, `quota_exhausted_already_rotated`, and two that mean the patch is broken:
+  `recreate_failed`, `quota_exhausted_already_rotated`, `limit_rejected` (a limit and its reset
+  time, as Claude Code reported them), `returned`, `model_denied`,
+  `denied_models_file_unreadable`, and two that mean the patch is broken:
   `credential_not_in_effect` (a session on a key reports another key source, so it bills
   something else) and `rotation_failed` (a defect in the switch; the quota failure is shown
   as unpatched). A real limit cannot be forced, so this log is how the first live switch is
   confirmed.
-- With patch 0004, a session on a key refuses the models listed in
+- A session on a key refuses the models listed in
   `~/.config/claude-agent-acp/denied-models` (one per line, `#` comments, the CLI's
   `deniedModels` syntax: `fable` blocks the family). The turn ends with a chat line asking to
   pick another model, before any request is sent, and `model_denied` is logged. The file is

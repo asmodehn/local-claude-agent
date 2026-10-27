@@ -149,6 +149,12 @@ apply_patches() {
       fail "Patch ${name} (made for ${source_version}) does not apply to ${PACKAGE} ${installed_version} in ${pkg_dir}. Its fix may be missing: update the patch, or, if upstream fixed it, create ${PATCH_ROOT}/${installed_version}/ holding a README and no .patch file."
     fi
   done
+  # A re-run finds a patch already applied by reversing it against the patched
+  # tree, which fails once a later patch changed its lines: the next run would
+  # stop on it. Overlapping patches must be one patch.
+  for p in "${patches[@]}"; do
+    patch "${opts[@]}" -d "${pkg_dir}" -R --dry-run <"$p" >/dev/null 2>&1 || fail "Patch $(basename "$p") is no longer detected as applied once the later patches are in: they overlap, so the next run would stop on it. Merge them into one patch."
+  done
   # A hunk can apply in the wrong place and still report success: prove the
   # result loads and that each fix behaves, before the IDE launches it.
   node --check "${pkg_dir}/dist/acp-agent.js" || fail "The patched ${pkg_dir}/dist/acp-agent.js no longer parses."

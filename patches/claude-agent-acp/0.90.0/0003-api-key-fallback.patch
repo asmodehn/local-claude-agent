@@ -1,7 +1,9 @@
-Move to the next API key of a local list when the current credential runs out of quota.
+API key fallback: move to the next API key of a local list when the current credential
+runs out of quota, refuse a deny list of models on those keys, and return to the native
+credential once its limit has reset. One patch, since each part changes the others' lines.
 
-A turn that fails as quota_exhausted (a claude.ai usage limit, or "Credit balance is
-too low" from an API key, which the CLI reports as billing_error) marks the
+Rotation. A turn that fails as quota_exhausted (a claude.ai usage limit, or "Credit
+balance is too low" from an API key, which the CLI reports as billing_error) marks the
 session's credential drained and picks the first key of
 ~/.config/claude-agent-acp/api-keys not drained yet (CLAUDE_ACP_API_KEYS_FILE
 overrides the path; one key per line, # starts a comment). Every session is then
@@ -12,8 +14,27 @@ failed turn, which would take the switch with it. A turn that cannot switch fail
 as before. The key also goes in the programmatic settings tier: Claude Code
 applies settings.json env after the subprocess env, so a user-level
 env.ANTHROPIC_API_KEY would otherwise replace it. Sessions routed by the client
-(providers/set, gateway auth) are left alone. Drained state lasts until the agent
-process restarts; the subscription is not returned to after its limit resets.
+(providers/set, gateway auth) are left alone. A drained key stays drained until the
+agent process restarts.
+
+Return. When the native credential runs out, the reset time of the limit, from the
+turn's rejected rate_limit_event, is kept with the switch. The first prompt at or
+after that time moves every session back to the native credential, recreating them
+before the prompt runs. No polling: the time is checked when a prompt arrives. A
+limit that reported no reset time, and a key without credit, are never returned
+from. A return that is too early costs one round trip: the prompt hits the limit and
+switches again.
+
+Deny list. Before a prompt is queued, a session on a key of the list checks its
+current model (and the model its alias resolves to, so "default" is caught) against
+~/.config/claude-agent-acp/denied-models (CLAUDE_ACP_DENIED_MODELS_FILE overrides
+the path; one entry per line in the CLI's deniedModels syntax, so "fable" blocks
+the family; # starts a comment), read at each prompt; a missing file denies nothing.
+A denied model ends the turn normally with a chat line asking to pick another model,
+before any request is sent. The CLI's own deniedModels is read from managed settings
+only, which would block the model on the subscription too. Not covered: the
+server-side advisor's model, a subagent's own model, and a switch made inside a
+running turn.
 
 Each step is a JSON line in ~/.local/state/claude-agent-acp/credential-rotation.log
 (CLAUDE_ACP_ROTATION_LOG overrides it), keys shown by their last four characters,
@@ -29,11 +50,62 @@ Local only, not meant for upstream.
  import packageJson from "../package.json" with { type: "json" };
  import { applyAskElicitationResponse, askUserQuestionsToCreateRequest, createElicitationResponseToElicitResult, extractAskUserQuestions, extractRefusalFallbackPrompt, mcpElicitationToCreateRequest, REFUSAL_FALLBACK_DIALOG_KIND, refusalFallbackResultFromResponse, refusalFallbackToCreateRequest, } from "./elicitation.js";
  import { forkSession } from "./fork-session.js";
-+import { credentialRotation, logRotation, maskKey } from "./credential-rotation.js";
++import { credentialRotation, deniedModelOnKey, DENIED_MODELS_FILE, logRotation, maskKey } from "./credential-rotation.js";
  import { readSubagentMessages, subagentHistory } from "./subagent-history.js";
  import { RfdSubagentReplay, replaySubagentTerminalState, } from "./subagent-replay.js";
  import { readResumedSession, readResumedTail, } from "./resumed-session.js";
-@@ -3379,6 +3380,34 @@
+@@ -2044,6 +2045,10 @@
+      * before this resolves.
+      */
+     async startTurn(params, events) {
++        // Local patch: back to the native credential once its limit has reset. The
++        // update recreates the sessions, and the wait below lets it finish first.
++        if (credentialRotation.returnIfReset(params.sessionId))
++            void this.enqueueProviderUpdate(this.providerConfig).catch((updateError) => logRotation("recreate_failed", { sessionId: params.sessionId, error: String(updateError) }));
+         if (this.providerUpdate)
+             await this.providerUpdate;
+         let session = this.sessions[params.sessionId];
+@@ -2072,6 +2077,21 @@
+         const subscriptionGuard = this.runClaudeSubscriptionGuard(params.sessionId, session);
+         if (subscriptionGuard)
+             await subscriptionGuard;
++        // Local patch: a key of the list never runs a model of the denied list. The turn
++        // ends normally, since JetBrains stops the agent on a failed turn.
++        const deniedModel = deniedModelOnKey(session);
++        if (deniedModel) {
++            logRotation("model_denied", { sessionId: params.sessionId, credential: maskKey(session.credential), model: deniedModel });
++            await this.client.sessionUpdate({
++                sessionId: params.sessionId,
++                update: {
++                    sessionUpdate: "agent_message_chunk",
++                    content: { type: "text", text: `${deniedModel} is not allowed on ${maskKey(session.credential)} (see ${DENIED_MODELS_FILE}). Pick another model in the model picker, then send your message again.\n` },
++                },
++            });
++            events.ended({ stopReason: "end_turn" });
++            return;
++        }
+         if (session.autoModeFallbackWarningPending) {
+             await this.sessionModes.publishFallbackWarning(params.sessionId, session);
+         }
+@@ -2501,6 +2521,9 @@
+         let lastAssistantError;
+         let lastAssistantWasUsageLimit = false;
+         let lastAssistantFailureTitle;
++        // Local patch: when the limit that rejected this turn resets, from its
++        // rate_limit_event, for the credential rotation.
++        let quotaResetsAt;
+         // When a streaming classifier refuses a turn, the assistant message carries
+         // stop_reason "refusal" and structured stop_details. We capture the
+         // human-readable explanation so the terminal `result` can surface it.
+@@ -2734,6 +2757,7 @@
+             lastAssistantError = undefined;
+             lastAssistantWasUsageLimit = false;
+             lastAssistantFailureTitle = undefined;
++            quotaResetsAt = undefined;
+             lastRefusalExplanation = null;
+             // Do NOT reset currentStreamMessageId or the streamed blocks here. Turn
+             // activation can fire mid-message (the replayed user echo with
+@@ -3379,6 +3403,34 @@
           *  prompt, shows its method chooser, and resumes the prompt after sign-in),
           *  so replacing it with a successful `end_turn` would disable that flow.
           *  Every client keeps the rejection. The client owns the login UI. */
@@ -47,7 +119,7 @@ Local only, not meant for upstream.
 +            if (kind !== "quota_exhausted" || session.credential === undefined)
 +                return false;
 +            try {
-+                const next = credentialRotation.advance(session.credential, params.sessionId);
++                const next = credentialRotation.advance(session.credential, params.sessionId, quotaResetsAt);
 +                if (next === undefined)
 +                    return false;
 +                void this.enqueueProviderUpdate(this.providerConfig).catch((updateError) => logRotation("recreate_failed", { sessionId: params.sessionId, error: String(updateError) }));
@@ -68,7 +140,7 @@ Local only, not meant for upstream.
          const failActiveWithSessionFailure = async (kind, error, title) => {
              if (!session.cancelled) {
                  // The turn ends with an error: its list row shows `error`.
-@@ -3733,6 +3762,11 @@
+@@ -3733,6 +3785,11 @@
                      case "system":
                          switch (message.subtype) {
                              case "init":
@@ -80,7 +152,7 @@ Local only, not meant for upstream.
                                  // Latch the lifecycle capability so cancel() routes orphan
                                  // accounting through `orphanCommands` (per-uuid, exact)
                                  // instead of the coalescing-blind count. Never unlatch: init
-@@ -4942,7 +4976,12 @@
+@@ -4942,7 +4999,12 @@
                                          break;
                                      }
                                      if (message.is_error) {
@@ -94,7 +166,7 @@ Local only, not meant for upstream.
                                          break;
                                      }
                                      // The result text is forwarded in two cases. Local-only
-@@ -4988,7 +5027,12 @@
+@@ -4988,7 +5050,12 @@
                                          break;
                                      }
                                      if (message.is_error) {
@@ -108,7 +180,18 @@ Local only, not meant for upstream.
                                          break;
                                      }
                                      stopReason = "end_turn";
-@@ -7869,13 +7913,21 @@
+@@ -5617,6 +5684,10 @@
+                         break;
+                     }
+                     case "rate_limit_event": {
++                        if (message.rate_limit_info?.status === "rejected") {
++                            quotaResetsAt = message.rate_limit_info.resetsAt;
++                            logRotation("limit_rejected", { sessionId: params.sessionId, resetsAt: message.rate_limit_info.resetsAt, rateLimitType: message.rate_limit_info.rateLimitType });
++                        }
+                         if (lastAssistantTotalUsage !== null) {
+                             await sendUpdate({
+                                 sessionId: params.sessionId,
+@@ -7869,13 +7940,21 @@
          // Claude Code applies env from settings.json after the subprocess env. Put
          // an active ACP route in the programmatic settings tier too so user/project
          // settings cannot silently restore a different ANTHROPIC_BASE_URL.
@@ -131,7 +214,7 @@ Local only, not meant for upstream.
          const env = {
              ...process.env,
              ...userProvidedOptions?.env,
-@@ -7883,6 +7935,7 @@
+@@ -7883,6 +7962,7 @@
              // legacy gateway auth request. Routing is baked into the query at
              // creation; provider updates recreate loaded queries between turns.
              ...providerEnv,
@@ -139,7 +222,7 @@ Local only, not meant for upstream.
              // Opt-in to session state events like when the agent is idle
              CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
          };
-@@ -8282,6 +8335,7 @@
+@@ -8282,6 +8362,7 @@
                  contextWindowSize: seededWindow.size,
                  contextWindowAuthoritative: seededWindow.authoritative,
                  providerCacheKey,
@@ -147,7 +230,7 @@ Local only, not meant for upstream.
                  taskState,
                  toolUseCache: {},
                  emittedToolCalls: new Set(),
-@@ -8369,6 +8423,8 @@
+@@ -8369,6 +8450,8 @@
      /** Tell a capable client when a non-auth error ends a session during a provider switch. */
      reportSessionLostOnProviderUpdate(sessionId, session, error) {
          this.logger.error(`Session ${sessionId}: could not be recreated for the provider update: ${error}`);
@@ -158,19 +241,23 @@ Local only, not meant for upstream.
              return;
 --- /dev/null
 +++ b/dist/credential-rotation.js
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,118 @@
 +// Local patch (local-claude-agent): move to the next credential when the current one
 +// runs out of quota. Credential `null` is the native one (the CLI login, or an
 +// ANTHROPIC_API_KEY already in the agent's environment); after it come the keys of
-+// the list file, one per line, `#` starting a comment. A drained credential stays
-+// drained until the agent process restarts.
++// the list file, one per line, `#` starting a comment. A drained key stays drained
++// until the agent process restarts; the native credential comes back once the reset
++// time its limit reported has passed.
 +import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 +import * as os from "node:os";
 +import * as path from "node:path";
++import { isDeniedModel } from "./session-model.js";
 +
 +const home = os.homedir();
 +export const KEYS_FILE = process.env.CLAUDE_ACP_API_KEYS_FILE ??
 +    path.join(home, ".config", "claude-agent-acp", "api-keys");
++export const DENIED_MODELS_FILE = process.env.CLAUDE_ACP_DENIED_MODELS_FILE ??
++    path.join(home, ".config", "claude-agent-acp", "denied-models");
 +export const LOG_FILE = process.env.CLAUDE_ACP_ROTATION_LOG ??
 +    path.join(home, ".local", "state", "claude-agent-acp", "credential-rotation.log");
 +
@@ -207,9 +294,33 @@ Local only, not meant for upstream.
 +    return text.split("\n").map((line) => line.replace(/#.*/, "").trim()).filter(Boolean);
 +}
 +
++/** The model a session on a key of the list must not run, or `undefined`. Entries of the
++ *  denied-models file follow `deniedModels` (`fable` blocks the family); it is read on
++ *  every call, so an edit applies to the next prompt. A missing file denies nothing. */
++export function deniedModelOnKey(session) {
++    if (typeof session.credential !== "string")
++        return undefined;
++    let text;
++    try {
++        text = readFileSync(DENIED_MODELS_FILE, "utf8");
++    }
++    catch (error) {
++        if (error?.code !== "ENOENT")
++            logRotation("denied_models_file_unreadable", { file: DENIED_MODELS_FILE, error: String(error) });
++        return undefined;
++    }
++    const denied = text.split("\n").map((line) => line.replace(/#.*/, "").trim()).filter(Boolean);
++    const modelId = session.models.currentModelId;
++    const resolved = session.modelInfos?.find((info) => info.value === modelId)?.resolvedModel;
++    return [modelId, resolved].find((id) => id && isDeniedModel(id, denied));
++}
++
 +class CredentialRotation {
 +    current = null;
 +    drained = new Set();
++    /** When the native credential's limit resets, in ms, if its limit reported it. */
++    nativeResetsAt = undefined;
++    now = () => Date.now();
 +    /** The env a new query needs to use the current credential. */
 +    env() {
 +        return this.current === null ? {} : { ANTHROPIC_API_KEY: this.current };
@@ -218,7 +329,7 @@ Local only, not meant for upstream.
 +     *  list not drained yet. Returns the new credential, or `undefined` when nothing
 +     *  changed: `failed` is no longer the current one (another session already moved
 +     *  on), or no credential is left. */
-+    advance(failed, sessionId) {
++    advance(failed, sessionId, resetsAt) {
 +        if (failed !== this.current) {
 +            logRotation("quota_exhausted_already_rotated", { sessionId, failed: maskKey(failed), current: maskKey(this.current) });
 +            return undefined;
@@ -230,8 +341,21 @@ Local only, not meant for upstream.
 +            return undefined;
 +        }
 +        this.current = next;
-+        logRotation("switched", { sessionId, from: maskKey(failed), to: maskKey(next) });
++        if (failed === null)
++            this.nativeResetsAt = resetsAt ? resetsAt * 1000 : undefined;
++        logRotation("switched", { sessionId, from: maskKey(failed), to: maskKey(next), ...(failed === null ? { returnsAt: resetsAt ? new Date(resetsAt * 1000).toISOString() : null } : {}) });
 +        return next;
++    }
++    /** Moves back to the native credential once its limit has reset. Returns true when
++     *  it moved: the caller then recreates the sessions. */
++    returnIfReset(sessionId) {
++        if (this.current === null || this.nativeResetsAt === undefined || this.now() < this.nativeResetsAt)
++            return false;
++        logRotation("returned", { sessionId, from: maskKey(this.current), to: maskKey(null) });
++        this.drained.delete(null);
++        this.current = null;
++        this.nativeResetsAt = undefined;
++        return true;
 +    }
 +}
 +

@@ -1,5 +1,5 @@
-// Post-install check for 0003-rotate-credentials-on-quota.patch, run by the installers
-// against the patched package directory (argv[2]). It drives prompts through the agent
+// Post-install check for the rotation of 0003-api-key-fallback.patch, run by the
+// installers against the patched package directory (argv[2]). It drives prompts through the agent
 // with a scripted Claude Code stream that ends in a usage limit or a key without
 // credit, against a temporary key list, and fails unless each failure moves the
 // sessions to the next key exactly once: default credential -> key 1 -> key 2, none
@@ -19,6 +19,7 @@ const keysFile = path.join(tmp, "api-keys");
 const logFile = path.join(tmp, "rotation.log");
 process.env.CLAUDE_ACP_API_KEYS_FILE = keysFile;
 process.env.CLAUDE_ACP_ROTATION_LOG = logFile;
+process.env.CLAUDE_ACP_DENIED_MODELS_FILE = path.join(tmp, "denied-models");
 
 const load = (rel) => import(pathToFileURL(path.join(pkg, "dist", rel)).href);
 const { ClaudeAcpAgent } = await load("acp-agent.js");

@@ -166,6 +166,14 @@ function Apply-Patches($PkgDir, $InstalledVersion) {
       Fail "Patch $($p.Name) (made for $sourceVersion) does not apply to $Package $InstalledVersion in $PkgDir. Its fix may be missing: update the patch, or, if upstream fixed it, create $PatchRoot\$InstalledVersion\ holding a README and no .patch file."
     }
   }
+  # A re-run finds a patch already applied by reversing it against the patched
+  # tree, which fails once a later patch changed its lines: the next run would
+  # stop on it. Overlapping patches must be one patch.
+  foreach ($p in $patches) {
+    if (-not (Invoke-GitApply $PkgDir $p.FullName -Reverse -Check)) {
+      Fail "Patch $($p.Name) is no longer detected as applied once the later patches are in: they overlap, so the next run would stop on it. Merge them into one patch."
+    }
+  }
   # A hunk can apply in the wrong place and still report success: prove the
   # result loads and that each fix behaves, before the IDE launches it.
   $ErrorActionPreference = "Continue"

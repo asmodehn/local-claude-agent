@@ -1,5 +1,5 @@
-// Post-install check for 0004-deny-models-on-keys.patch, run by the installers against
-// the patched package directory (argv[2]). It sends one prompt per case, against a
+// Post-install check for the deny list of 0003-api-key-fallback.patch, run by the
+// installers against the patched package directory (argv[2]). It sends one prompt per case, against a
 // temporary denied-models file, and fails unless a session on a key of the list whose
 // model is denied (by id, or through the alias it resolves to) ends the turn normally
 // with a chat line, without running the query; and unless the native credential, an

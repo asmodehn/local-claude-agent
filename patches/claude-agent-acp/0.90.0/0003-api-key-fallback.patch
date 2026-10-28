@@ -87,25 +87,19 @@ Local only, not meant for upstream.
          if (session.autoModeFallbackWarningPending) {
              await this.sessionModes.publishFallbackWarning(params.sessionId, session);
          }
-@@ -2501,6 +2521,9 @@
+@@ -2501,6 +2521,11 @@
          let lastAssistantError;
          let lastAssistantWasUsageLimit = false;
          let lastAssistantFailureTitle;
 +        // Local patch: when the limit that rejected this turn resets, from its
-+        // rate_limit_event, for the credential rotation.
++        // rate_limit_event, for the credential rotation. Kept until a switch uses it,
++        // not cleared when a turn starts: the event can come before the turn is
++        // activated (its echo, or an echo-less turn's result).
 +        let quotaResetsAt;
          // When a streaming classifier refuses a turn, the assistant message carries
          // stop_reason "refusal" and structured stop_details. We capture the
          // human-readable explanation so the terminal `result` can surface it.
-@@ -2734,6 +2757,7 @@
-             lastAssistantError = undefined;
-             lastAssistantWasUsageLimit = false;
-             lastAssistantFailureTitle = undefined;
-+            quotaResetsAt = undefined;
-             lastRefusalExplanation = null;
-             // Do NOT reset currentStreamMessageId or the streamed blocks here. Turn
-             // activation can fire mid-message (the replayed user echo with
-@@ -3379,6 +3403,34 @@
+@@ -3379,6 +3404,35 @@
           *  prompt, shows its method chooser, and resumes the prompt after sign-in),
           *  so replacing it with a successful `end_turn` would disable that flow.
           *  Every client keeps the rejection. The client owns the login UI. */
@@ -120,6 +114,7 @@ Local only, not meant for upstream.
 +                return false;
 +            try {
 +                const next = credentialRotation.advance(session.credential, params.sessionId, quotaResetsAt);
++                quotaResetsAt = undefined;
 +                if (next === undefined)
 +                    return false;
 +                void this.enqueueProviderUpdate(this.providerConfig).catch((updateError) => logRotation("recreate_failed", { sessionId: params.sessionId, error: String(updateError) }));
@@ -140,7 +135,7 @@ Local only, not meant for upstream.
          const failActiveWithSessionFailure = async (kind, error, title) => {
              if (!session.cancelled) {
                  // The turn ends with an error: its list row shows `error`.
-@@ -3733,6 +3785,11 @@
+@@ -3733,6 +3787,11 @@
                      case "system":
                          switch (message.subtype) {
                              case "init":
@@ -152,7 +147,7 @@ Local only, not meant for upstream.
                                  // Latch the lifecycle capability so cancel() routes orphan
                                  // accounting through `orphanCommands` (per-uuid, exact)
                                  // instead of the coalescing-blind count. Never unlatch: init
-@@ -4942,7 +4999,12 @@
+@@ -4942,7 +5001,12 @@
                                          break;
                                      }
                                      if (message.is_error) {
@@ -166,7 +161,7 @@ Local only, not meant for upstream.
                                          break;
                                      }
                                      // The result text is forwarded in two cases. Local-only
-@@ -4988,7 +5050,12 @@
+@@ -4988,7 +5052,12 @@
                                          break;
                                      }
                                      if (message.is_error) {
@@ -180,7 +175,7 @@ Local only, not meant for upstream.
                                          break;
                                      }
                                      stopReason = "end_turn";
-@@ -5617,6 +5684,10 @@
+@@ -5617,6 +5686,10 @@
                          break;
                      }
                      case "rate_limit_event": {
@@ -191,7 +186,7 @@ Local only, not meant for upstream.
                          if (lastAssistantTotalUsage !== null) {
                              await sendUpdate({
                                  sessionId: params.sessionId,
-@@ -7869,13 +7940,21 @@
+@@ -7869,13 +7942,21 @@
          // Claude Code applies env from settings.json after the subprocess env. Put
          // an active ACP route in the programmatic settings tier too so user/project
          // settings cannot silently restore a different ANTHROPIC_BASE_URL.
@@ -214,7 +209,7 @@ Local only, not meant for upstream.
          const env = {
              ...process.env,
              ...userProvidedOptions?.env,
-@@ -7883,6 +7962,7 @@
+@@ -7883,6 +7964,7 @@
              // legacy gateway auth request. Routing is baked into the query at
              // creation; provider updates recreate loaded queries between turns.
              ...providerEnv,
@@ -222,7 +217,7 @@ Local only, not meant for upstream.
              // Opt-in to session state events like when the agent is idle
              CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
          };
-@@ -8282,6 +8362,7 @@
+@@ -8282,6 +8364,7 @@
                  contextWindowSize: seededWindow.size,
                  contextWindowAuthoritative: seededWindow.authoritative,
                  providerCacheKey,
@@ -230,7 +225,7 @@ Local only, not meant for upstream.
                  taskState,
                  toolUseCache: {},
                  emittedToolCalls: new Set(),
-@@ -8369,6 +8450,8 @@
+@@ -8369,6 +8452,8 @@
      /** Tell a capable client when a non-auth error ends a session during a provider switch. */
      reportSessionLostOnProviderUpdate(sessionId, session, error) {
          this.logger.error(`Session ${sessionId}: could not be recreated for the provider update: ${error}`);

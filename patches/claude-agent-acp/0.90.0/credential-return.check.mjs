@@ -33,13 +33,14 @@ const usageLimit = { error: "rate_limit", text: "You've hit your session limit Â
 const noCredit = { error: "billing_error", text: "Credit balance is too low" };
 
 /** One turn: a rejected rate_limit_event when `resetsAt` is given, then `failure`, or a
- *  plain successful turn when `failure` is undefined. */
-async function* claudeCode(input, failure, resetsAt) {
+ *  plain successful turn when `failure` is undefined. With `eventFirst` the event comes
+ *  before the prompt's echo, which activates the turn. */
+async function* claudeCode(input, failure, resetsAt, eventFirst) {
   const { value } = await input[Symbol.asyncIterator]().next();
+  const rejected = { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour" }, uuid: randomUUID(), session_id: sessionId };
+  if (resetsAt !== undefined && eventFirst) yield rejected;
   yield { type: "user", message: value.message, parent_tool_use_id: null, uuid: value.uuid, session_id: sessionId, isReplay: true };
-  if (resetsAt !== undefined) {
-    yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour" }, uuid: randomUUID(), session_id: sessionId };
-  }
+  if (resetsAt !== undefined && !eventFirst) yield rejected;
   if (failure) {
     yield {
       type: "assistant", session_id: sessionId, parent_tool_use_id: null, uuid: randomUUID(), error: failure.error,
@@ -65,10 +66,10 @@ const agent = new ClaudeAcpAgent(
 agent.enqueueProviderUpdate = async (config) => recreations.push(config);
 
 /** One prompt at `nowSeconds` on a fresh session holding `credential`. */
-async function send(credential, nowSeconds, failure, resetsAt) {
+async function send(credential, nowSeconds, failure, resetsAt, eventFirst = false) {
   credentialRotation.now = () => nowSeconds * 1000;
   const input = new Pushable();
-  const query = Object.assign(claudeCode(input, failure, resetsAt), {
+  const query = Object.assign(claudeCode(input, failure, resetsAt, eventFirst), {
     interrupt: async () => {}, stopTask: async () => {}, close() {}, setModel: async () => {},
   });
   const inertAgent = { client: { sessionUpdate: async () => {} }, logger: { error() {} }, sessions: {} };
@@ -120,6 +121,8 @@ try {
   expect("a day later, no reset time known", await send(k1, T + 86400), { failed: false, recreated: 0, current: k1 });
   expect("key without credit", await send(k1, T + 86500, noCredit, T + 90000), { failed: false, recreated: 1, current: k2, resetsAt: undefined });
   expect("after that key's reported time", await send(k2, T + 90001), { failed: false, recreated: 0, current: k2 });
+  credentialRotation.current = null;
+  expect("native limit reported before the prompt's echo", await send(null, T + 90100, usageLimit, T + 99000, true), { failed: false, recreated: 1, current: k2, resetsAt: (T + 99000) * 1000 });
   const log = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
   const returned = log.split("\n").filter((l) => l.includes('"event":"returned"')).length;
   if (returned !== 1) problems.push(`log has ${returned} returned lines, expected 1`);

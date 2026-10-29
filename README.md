@@ -39,6 +39,16 @@ no longer do. It can contain conversation text; on macOS/Linux the folder is cre
 running agent keeps the environment it started with: the log starts with the next new chat or
 IDE restart. The agent appends to it without rotation.
 
+`node extract-acp-errors.mjs`, run from this folder, copies the errors of these sessions into
+`errors.jsonl` next to `agent.log`, one JSON line each: the client's (`Error during prompt
+turn` in the IDE log) by chat id, and the agent's, joined to their chat and session through the
+agent's pid. It copies fields, never whole lines, but an error message can quote conversation
+text, so the file is created mode 600; a second run adds nothing. It also trims
+`agent.log` to its newest half once it passes 20 MB (`--max-agent-log <bytes>`). It looks for the
+IDE logs under `~/.cache/JetBrains` (Linux); elsewhere pass each with `--ide-log <file>`. Agents
+started before `CLAUDE_AGENT_LOGS` was set relay every line, so until they exit a line of theirs
+can be recorded as an error. `node extract-acp-errors.check.mjs` checks it against fixture logs.
+
 ## Local patches
 
 Fixes for upstream bugs that are not released yet live in `patches/claude-agent-acp/<version>/`, one unified diff per fix, made against that exact published version. The installers install the pinned version (`PINNED_VERSION` in the `.sh`, `$PinnedVersion` in the `.ps1`) and apply its patches; re-running them is safe, as an already-applied patch is skipped.

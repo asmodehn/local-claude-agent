@@ -29,8 +29,9 @@ monitors). While a turn is not settled, a model cycle runs (from its first outpu
 its result, tracked here since ACP v1 does not track a cycle Claude Code starts on
 its own), or a background task is live, the prompt is answered with that work and
 ends normally without running, logged as change_held with that list (command text
-included); the next prompt tries again. A session whose Claude Code has ended runs
-nothing. Otherwise every session is recreated under its id before the prompt runs,
+included); the next prompt tries again. A return that moves no session (its switch
+was held, so every session is still on the native credential) only clears the key,
+holding nothing. A session whose Claude Code has ended runs nothing. Otherwise every session is recreated under its id before the prompt runs,
 with the key as ANTHROPIC_API_KEY in the query env. Not covered: a cycle between the
 message that starts it and its first output, and work Claude Code does not report as
 a task.
@@ -64,21 +65,26 @@ Local only, not meant for upstream.
  import { clientSystemPrompt, sdkSystemPrompt, SYSTEM_PROMPT_CAPABILITY, } from "./client-system-prompt.js";
  import { readSubagentMessages, subagentHistory, subagentLaunchIds, subagentLaunchedBy, subagentLineage, } from "./subagent-history.js";
  import { RfdSubagentReplay, firstResponseModel, replaySubagentTerminalState, } from "./subagent-replay.js";
-@@ -2158,6 +2159,32 @@
+@@ -2158,6 +2159,37 @@
          // own turn comes from that timer, which is already cleared.
          if (origin === "client")
              this.sessions[params.sessionId]?.idleCompaction?.disarm("prompt");
 +        // Local patch: the credential changes at a user's message, once no work runs,
 +        // since the change recreates the sessions and kills all their Claude Code runs.
-+        // Due when the native credential's limit has reset, or when a session still runs
-+        // on a credential the rotation moved away from. While work runs the message is
-+        // answered with what runs, and the turn ends normally (JetBrains stops the agent
++        // Due when a session runs on another credential than the target: the native one
++        // once its limit has reset, else the rotation's current one. A return that moves
++        // no session needs no recreation, so nothing holds it. While work runs the message
++        // is answered with what runs, and the turn ends normally (JetBrains stops the agent
 +        // on a failed one). The update recreates the sessions; the wait below lets it end.
 +        const sessions = Object.values(this.sessions);
 +        const returning = credentialRotation.returnDue();
-+        if (origin === "client" && (returning || sessions.some((s) => s.credential !== undefined && s.credential !== credentialRotation.current))) {
++        const targetCredential = returning ? null : credentialRotation.current;
++        const moving = sessions.some((s) => s.credential !== undefined && s.credential !== targetCredential);
++        if (origin === "client" && !moving)
++            credentialRotation.returnIfReset(params.sessionId);
++        else if (origin === "client") {
 +            const running = runningWork(sessions);
-+            const target = maskKey(returning ? null : credentialRotation.current);
++            const target = maskKey(targetCredential);
 +            if (running.length > 0) {
 +                logRotation("change_held", { sessionId: params.sessionId, to: target, running });
 +                await this.client.sessionUpdate({
@@ -97,7 +103,7 @@ Local only, not meant for upstream.
          const received = ++this.promptsReceived;
          while (this.providerUpdate)
              await this.providerUpdate;
-@@ -2232,6 +2259,21 @@
+@@ -2232,6 +2264,21 @@
          const subscriptionGuard = this.runClaudeSubscriptionGuard(params.sessionId, session);
          if (subscriptionGuard)
              await subscriptionGuard;
@@ -119,7 +125,7 @@ Local only, not meant for upstream.
          if (session.autoModeFallbackWarningPending) {
              await this.sessionModes.publishFallbackWarning(params.sessionId, session);
          }
-@@ -2820,6 +2862,11 @@
+@@ -2820,6 +2867,11 @@
          let lastAssistantError;
          let lastAssistantWasUsageLimit = false;
          let lastAssistantFailureTitle;
@@ -131,7 +137,7 @@ Local only, not meant for upstream.
          // When a streaming classifier refuses a turn, the assistant message carries
          // stop_reason "refusal" and structured stop_details. We capture the
          // human-readable explanation so the terminal `result` can surface it.
-@@ -3798,6 +3845,33 @@
+@@ -3798,6 +3850,33 @@
           *  prompt, shows its method chooser, and resumes the prompt after sign-in),
           *  so replacing it with a successful `end_turn` would disable that flow.
           *  Every client keeps the rejection. The client owns the login UI. */
@@ -165,7 +171,7 @@ Local only, not meant for upstream.
          const failActiveWithSessionFailure = async (kind, error, title) => {
              if (!session.cancelled) {
                  // The turn ends with an error: its list row shows `error`.
-@@ -4171,6 +4245,13 @@
+@@ -4171,6 +4250,13 @@
                      await this.publishRuntimeGoal(params.sessionId, toGoalSnapshot(activeGoal));
                      continue;
                  }
@@ -179,7 +185,7 @@ Local only, not meant for upstream.
                  this.startAutonomousCycle(params.sessionId, session, message);
                  // From CLI 2.1.270 the state stays `running` while background agents
                  // run, so a turn that their notification starts has no `running`
-@@ -4188,6 +4269,11 @@
+@@ -4188,6 +4274,11 @@
                      case "system":
                          switch (message.subtype) {
                              case "init":
@@ -191,7 +197,7 @@ Local only, not meant for upstream.
                                  // Latch the lifecycle capability so cancel() routes orphan
                                  // accounting through `orphanCommands` (per-uuid, exact)
                                  // instead of the coalescing-blind count. Never unlatch: init
-@@ -5495,7 +5581,12 @@
+@@ -5495,7 +5586,12 @@
                                          break;
                                      }
                                      if (message.is_error) {
@@ -205,7 +211,7 @@ Local only, not meant for upstream.
                                          break;
                                      }
                                      // The result text is forwarded in two cases. Local-only
-@@ -5541,7 +5632,12 @@
+@@ -5541,7 +5637,12 @@
                                          break;
                                      }
                                      if (message.is_error) {
@@ -219,7 +225,7 @@ Local only, not meant for upstream.
                                          break;
                                      }
                                      stopReason = "end_turn";
-@@ -6262,6 +6358,10 @@
+@@ -6262,6 +6363,10 @@
                          break;
                      }
                      case "rate_limit_event": {
@@ -230,7 +236,7 @@ Local only, not meant for upstream.
                          session.idleCompaction?.noteRateLimit(message.rate_limit_info);
                          if (lastAssistantTotalUsage !== null) {
                              await sendUpdate({
-@@ -9180,13 +9280,21 @@
+@@ -9180,13 +9285,21 @@
          // Claude Code applies env from settings.json after the subprocess env. Put
          // an active ACP route in the programmatic settings tier too so user/project
          // settings cannot silently restore a different ANTHROPIC_BASE_URL.
@@ -253,7 +259,7 @@ Local only, not meant for upstream.
          const env = {
              ...process.env,
              ...userProvidedOptions?.env,
-@@ -9194,6 +9302,7 @@
+@@ -9194,6 +9307,7 @@
              // legacy gateway auth request. Routing is baked into the query at
              // creation; provider updates recreate loaded queries between turns.
              ...providerEnv,
@@ -261,7 +267,7 @@ Local only, not meant for upstream.
              // Opt-in to session state events like when the agent is idle
              CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
              ...STARTUP_FAILURE_RESULTS_ENV,
-@@ -9662,6 +9771,7 @@
+@@ -9662,6 +9776,7 @@
                  contextWindowSize: seededWindow.size,
                  contextWindowAuthoritative: seededWindow.authoritative,
                  providerCacheKey,
@@ -269,7 +275,7 @@ Local only, not meant for upstream.
                  taskState,
                  toolUseCache: {},
                  emittedToolCalls: new Set(),
-@@ -9884,6 +9994,8 @@
+@@ -9884,6 +9999,8 @@
      /** Tell a capable client when a non-auth error ends a session during a provider switch. */
      reportSessionLostOnProviderUpdate(sessionId, session, error) {
          this.logger.error(`Session ${sessionId}: could not be recreated for the provider update: ${error}`);

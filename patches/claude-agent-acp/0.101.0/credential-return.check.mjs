@@ -6,7 +6,9 @@
 // credential before it runs, unless Claude Code still runs a model cycle: that prompt
 // is then answered with it, without running or moving; and unless a prompt before that
 // time, a switch whose limit reported no reset time, and a key without credit stay where
-// they are. It imports package internals, so it belongs to this exact version's folder.
+// they are. A session that never left the native credential (its switch held) is not
+// held at the return, even while Claude Code runs a cycle: no session moves, so nothing
+// is recreated. It imports package internals, so it belongs to this exact version's folder.
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -133,9 +135,10 @@ try {
   expect("after that key's reported time", await send(k2, T + 90001), { failed: false, recreated: 0, current: k2 });
   credentialRotation.current = null;
   expect("native limit reported before the prompt's echo", await send(null, T + 90100, usageLimit, T + 99000, true), { failed: false, recreated: 0, current: k2, resetsAt: (T + 99000) * 1000 });
+  expect("reset reached, the session never left the native credential, a cycle running", await send(null, T + 99000, undefined, undefined, false, true), { failed: false, recreated: 0, held: 0, current: "native", resetsAt: undefined });
   const log = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
   const returned = log.split("\n").filter((l) => l.includes('"event":"returned"')).length;
-  if (returned !== 1) problems.push(`log has ${returned} returned lines, expected 1`);
+  if (returned !== 2) problems.push(`log has ${returned} returned lines, expected 2`);
   if (!log.includes(`"returnsAt":"${new Date(T * 1000).toISOString()}"`)) problems.push("switch line has no returnsAt");
   if (!log.includes('"returnsAt":null')) problems.push("switch with no reset time is not logged as such");
   if (log.includes(k1) || log.includes(k2)) problems.push("log contains a full key");

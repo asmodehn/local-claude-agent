@@ -108,14 +108,16 @@ file is read at each switch, so keys can be added without restarting.
   a model cycle Claude Code started on its own, or a background task (subagent, background
   command, monitor) still runs, your message is answered with that list and not run
   (`change_held`, which logs the list, command text included); send it again once that work
-  has ended. Not covered: a cycle in the moment between the message that starts it and its
-  first output, and work Claude Code does not report as a task.
+  has ended. In PyCharm 2026.3 the chats share one agent, so work in any chat holds the
+  change for all of them. Not covered: a cycle in the moment between the message that starts
+  it and its first output, and work Claude Code does not report as a task.
 - Order: the native credential (CLI login, or an `ANTHROPIC_API_KEY` the IDE passes to the
   agent), then the keys top to bottom. A drained key is skipped until the agent restarts.
   Closing a chat does not restart its agent in PyCharm; quitting the IDE does.
 - The reset time of the limit that drained the native credential is kept
   with the switch (`returnsAt` in the `switched` line); the first message at or after it moves
-  every session back to the native credential before it runs (`returned`), once no work runs. No polling: the
+  every session back to the native credential before it runs (`returned`), once no work runs;
+  when the switch was held, no session left the native credential and nothing is held. No polling: the
   time is checked when a message arrives, so an idle chat returns at its next message. A
   switch whose limit reported no reset time (`returnsAt: null`) is never returned from. A
   return that is too early costs one round trip: the message hits the limit and switches again.

@@ -13,7 +13,7 @@ Two equivalent installers are provided:
 
 1. **Node.js** — check for Node.js >= 22; install it if missing or too old (via Homebrew/apt/nvm on macOS/Linux, or winget/choco on Windows).
 2. **Install the ACP agent** — install the pinned version of `@agentclientprotocol/claude-agent-acp` globally via npm, apply the local patches for it (see [Local patches](#local-patches)), and resolve the path to its executable/entry point.
-3. **Claude Code CLI (auth)** — check for the local `claude` CLI, offering to install it if missing. Authentication is done by logging in to this CLI (`claude`), reusing your existing Claude subscription/plan rather than requiring JetBrains AI credits or a paid API key. As a fallback, if no CLI login is found but `ANTHROPIC_API_KEY` is set in the environment, the script asks before embedding it in plaintext in the config file — this is not the default or recommended path.
+3. **Claude Code CLI (auth)** — check for the local `claude` CLI, offering to install it if missing, and point the agent at it (`CLAUDE_CODE_EXECUTABLE`, see [Which Claude Code runs](#which-claude-code-runs)). Authentication is done by logging in to this CLI (`claude`), reusing your existing Claude subscription/plan rather than requiring JetBrains AI credits or a paid API key. As a fallback, if no CLI login is found but `ANTHROPIC_API_KEY` is set in the environment, the script asks before embedding it in plaintext in the config file — this is not the default or recommended path.
 4. **Register the agent** — write/merge an entry into the JetBrains ACP config (`~/.jetbrains/acp.json` on macOS/Linux, `%USERPROFILE%\.jetbrains\acp.json` on Windows), pointing it at the installed agent binary. Existing config is backed up first (`acp.json.bak.<timestamp>`) and merged rather than overwritten, so other configured agents are preserved.
 5. **Detect installed JetBrains IDEs** — best-effort, informational scan of common install locations (Toolbox, `/Applications`, `Program Files`, etc.) to confirm a compatible IDE is present. This step never fails the script.
 
@@ -28,6 +28,25 @@ Two equivalent installers are provided:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-claude-acp-jetbrains.ps1
 ```
+
+## Which Claude Code runs
+
+The agent's SDK bundles its own Claude Code CLI, a second binary at another path that lags the
+one you run in a terminal. Anything that treats binaries one by one sees two CLIs, with
+different versions and rules: an application firewall that allows programs by path let one
+through and blocked the other, which shows up as hung turns. One CLI is simpler to run and to
+allow. So when the installers find `claude`, they set `CLAUDE_CODE_EXECUTABLE`
+in the agent's `acp.json` entry to the path `command -v claude` gives (a symlink stays a
+symlink, so the CLI's own updates apply). The native installer's `claude` links to the file
+`~/.local/share/claude/versions/<version>`, and such a firewall sees that real path, which
+changes at every CLI update: a rule for one version does not cover the next. The agent now
+runs the same file as the terminal, so after an update its first turn hangs like the terminal
+until that version is allowed. Without a CLI found, the key is left out and the bundled CLI
+runs. Each run rewrites the entry's `env`: a key added there by hand is lost, so
+re-run the installer after moving the CLI instead of editing it. On Windows the key is set
+only for a native `claude.exe`, since the SDK cannot start an npm `.cmd` shim (untested).
+Whether a CLI newer than the SDK's always speaks its protocol is not checked: a failure to
+start sessions after a CLI update points here.
 
 ## Agent log
 

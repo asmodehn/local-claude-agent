@@ -213,6 +213,9 @@ claude_is_logged_in() {
 CLAUDE_ENV_BLOCK="{}"
 if command -v claude >/dev/null 2>&1; then
   ok "Claude Code CLI found: $(command -v claude)"
+  # The agent runs this CLI instead of the older one bundled with the SDK: one binary for a
+  # firewall to allow, not two. The path, not its target, so the CLI's own updates apply.
+  CLAUDE_ENV_BLOCK=$(CLAUDE_BIN="$(command -v claude)" node -e 'console.log(JSON.stringify({CLAUDE_CODE_EXECUTABLE: process.env.CLAUDE_BIN}))')
   if claude_is_logged_in; then
     ok "Existing Claude Code login detected — the ACP agent will reuse it."
   else

@@ -225,6 +225,14 @@ $envBlock = @{}
 $credentialsFile = Join-Path $env:USERPROFILE ".claude\.credentials.json"
 if (Get-Command claude -ErrorAction SilentlyContinue) {
   Ok "Claude Code CLI found: $((Get-Command claude).Source)"
+  # The agent runs this CLI instead of the older one bundled with the SDK: one binary for a
+  # firewall to allow, not two. Only a native .exe: the SDK cannot start an npm .cmd shim.
+  $claudeExe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -like "*.exe" } | Select-Object -First 1)
+  if ($claudeExe) {
+    $envBlock["CLAUDE_CODE_EXECUTABLE"] = $claudeExe.Source
+  } else {
+    Warn "The Claude Code CLI found is not a native .exe; the agent keeps the CLI bundled with the SDK."
+  }
   if (Test-Path $credentialsFile) {
     Ok "Existing Claude Code login detected - the ACP agent will reuse it."
   } else {

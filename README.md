@@ -4,6 +4,8 @@ Installs and registers the [Claude Agent SDK ACP agent](https://github.com/agent
 
 **Why use this instead of JetBrains AI Assistant's built-in Claude support?** This wires the IDE up to your **local Claude Code CLI** installation. Auth is handled by logging in to the CLI (`claude`) with your own Anthropic account, so it runs on **your existing Claude plan** (Pro/Max/Team subscription) — not JetBrains AI credits, and not a separate `ANTHROPIC_API_KEY`/pay-per-token API bill (that's only used as a fallback if you don't want to log in via the CLI).
 
+In 2026.3 IDEs this holds only while the agent's AI source (the selector in the chat input) is **Agent login**. With **JetBrains AI** selected, the IDE routes the agent through its own LLM proxy (`[providers/set]` in the agent's log) and bills JetBrains AI credits. Check the selector after installing.
+
 Two equivalent installers are provided:
 
 - `install-claude-acp-jetbrains.sh` — macOS / Linux
@@ -145,4 +147,4 @@ file is read at each switch, so keys can be added without restarting.
 
 1. Make sure your JetBrains IDE (IntelliJ IDEA, PyCharm, WebStorm, PhpStorm, RubyMine, CLion, GoLand, Rider, DataGrip, RustRover, or Android Studio) is on version 2025.3+ with the AI Assistant plugin updated.
 2. If you haven't already, run `claude` once in a terminal to log in (or set `ANTHROPIC_API_KEY`).
-3. Restart the IDE, open the AI Chat tool window, and select **Claude Agent (ACP)** from the agent picker.
+3. Restart the IDE, open the AI Chat tool window, and select **Claude Agent (ACP)** from the agent picker. In 2026.3, set its AI source to **Agent login** (see the top of this file).

@@ -14,3 +14,12 @@ settle, they move into the bridge, so they apply whichever agent runs behind it:
 
 - a stop hook that blocks slop grenades;
 - a claim checker, backed by an MCP server that runs a constraint solver.
+
+## No JavaScript at the system level
+
+Install the bridge per user instead of into the system's global npm folder. Today the Linux
+installer runs `npm install -g`, retrying with `sudo` when that fails, so the bridge lands in
+`/usr/lib/node_modules`; when Node is missing or too old, it installs Node from NodeSource with
+`apt`. Both should move under the user's home: Node from a per-user version manager, and the
+bridge in a per-user npm prefix. The same goes for the installer's fallback that installs the
+Claude Code CLI with `npm install -g` when no `claude` is found.

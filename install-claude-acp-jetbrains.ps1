@@ -256,74 +256,21 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 # 4. Register the agent in %USERPROFILE%\.jetbrains\acp.json
 # ---------------------------------------------------------------------------
 
-function ConvertTo-HashtableDeep($InputObject) {
-  # Note: two non-obvious PowerShell pitfalls are worked around here:
-  #  - "-is [PSCustomObject]" can return $true for plain strings once they've
-  #    passed through a pipeline (ForEach-Object), so PSCustomObject-ness is
-  #    checked via GetType().Name instead of the "-is" operator.
-  #  - returning a single-element array via "return"/the output stream
-  #    unwraps it to a scalar at the call site; Write-Output -NoEnumerate
-  #    prevents that collapse.
-  if ($null -eq $InputObject) { return $null }
-  if ($InputObject -is [System.Collections.IDictionary]) {
-    $ht = @{}
-    foreach ($key in $InputObject.Keys) { $ht[$key] = ConvertTo-HashtableDeep $InputObject[$key] }
-    return $ht
-  } elseif ($InputObject.GetType().Name -eq 'PSCustomObject') {
-    $ht = @{}
-    foreach ($p in $InputObject.PSObject.Properties) { $ht[$p.Name] = ConvertTo-HashtableDeep $p.Value }
-    return $ht
-  } elseif ($InputObject -is [System.Collections.IEnumerable] -and -not ($InputObject -is [string])) {
-    $out = @($InputObject | ForEach-Object { ConvertTo-HashtableDeep $_ })
-    Write-Output -NoEnumerate $out
-  } else {
-    return $InputObject
-  }
-}
-
 Info "Registering agent in $ConfigFile..."
-New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-
 # The agent writes its own log there (CLAUDE_AGENT_LOGS -> agent.log): its errors, and
 # the lines it then no longer sends to the IDE log. It can hold conversation text; the
 # folder sits under the user's profile, private to that user by default.
 $AgentLogDir = Join-Path $env:USERPROFILE ".local\state\claude-agent-acp"
 New-Item -ItemType Directory -Force -Path $AgentLogDir | Out-Null
 
-$config = $null
-if (Test-Path $ConfigFile) {
-  $backupPath = "$ConfigFile.bak.$(Get-Date -Format yyyyMMddHHmmss)"
-  Copy-Item -Path $ConfigFile -Destination $backupPath
-  try {
-    $parsed = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-    $config = ConvertTo-HashtableDeep $parsed
-  } catch {
-    Warn "Existing $ConfigFile is not valid JSON; a backup was kept at $backupPath. Starting from a fresh config."
-  }
+$previousRegistrationEnv = $env:CLAUDE_ACP_REGISTRATION_ENV
+try {
+  $env:CLAUDE_ACP_REGISTRATION_ENV = $envBlock | ConvertTo-Json -Compress
+  & $nodePath (Join-Path $PSScriptRoot "register-acp-agent.mjs") claude $distPath $AgentLogDir
+  if ($LASTEXITCODE -ne 0) { Fail "Could not register '$AgentDisplayName' in $ConfigFile." }
+} finally {
+  $env:CLAUDE_ACP_REGISTRATION_ENV = $previousRegistrationEnv
 }
-
-if (-not $config) {
-  $config = @{
-    default_mcp_settings = @{ use_custom_mcp = $true; use_idea_mcp = $false }
-    agent_servers = @{}
-  }
-}
-if (-not $config.ContainsKey("agent_servers")) { $config["agent_servers"] = @{} }
-
-$agentEntry = @{
-  command       = $nodePath
-  args          = @($distPath)
-  use_idea_mcp  = $true
-  use_custom_mcp = $true
-}
-$envBlock["CLAUDE_AGENT_LOGS"] = $AgentLogDir
-$agentEntry["env"] = $envBlock
-
-$config["agent_servers"][$AgentDisplayName] = $agentEntry
-
-($config | ConvertTo-Json -Depth 10) | Set-Content -Path $ConfigFile -Encoding utf8
-
-Ok "Registered '$AgentDisplayName' in $ConfigFile"
 
 # ---------------------------------------------------------------------------
 # 5. Detect installed JetBrains IDEs (informational only - must never fail
